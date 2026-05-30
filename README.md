@@ -38,8 +38,8 @@ Final Answer
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/<your-username>/agentic-rag-agent.git
-cd agentic-rag-agent
+git clone https://github.com/VamshiKrish2825/Agentic-rag-agent.git
+cd Agentic-rag-agent
 
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
@@ -50,7 +50,7 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY (or Groq/Ollama — see .env.example)
+# Edit .env and add your OpenAI, Groq, or Ollama settings.
 ```
 
 ### 3. Add your documents
@@ -126,6 +126,12 @@ OPENAI_BASE_URL=http://localhost:11434/v1
 LLM_MODEL=qwen2.5:7b
 ```
 
+For local Ollama, make sure the model is pulled before starting the app:
+
+```bash
+ollama pull qwen2.5:7b
+```
+
 ---
 
 ## How the LangGraph Agent Works
@@ -167,9 +173,13 @@ All tunable parameters live in `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
+| `OPENAI_API_KEY` | required | API key for OpenAI-compatible chat providers. Use `ollama` for local Ollama. |
+| `OPENAI_BASE_URL` | empty | Optional OpenAI-compatible endpoint for Groq, Ollama, etc. |
 | `LLM_MODEL` | `gpt-4o-mini` | LLM model name |
-| `EMBED_MODEL` | `all-MiniLM-L6-v2` | HuggingFace embedding model |
+| `LLM_TEMPERATURE` | `0` | LLM sampling temperature |
+| `EMBED_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | HuggingFace embedding model |
 | `TOP_K` | `4` | Number of chunks to retrieve |
+| `MAX_REWRITES` | `2` | Number of self-correction retries before fallback generation |
 | `CHUNK_SIZE` | `512` | Tokens per chunk |
 | `CHUNK_OVERLAP` | `64` | Overlap between consecutive chunks |
 | `DATA_DIR` | `data/sample_docs` | Directory of source documents |

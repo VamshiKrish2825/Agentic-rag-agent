@@ -9,16 +9,25 @@ Run:
 Then open http://127.0.0.1:7860 in your browser.
 """
 
-import gradio as gr
+from __future__ import annotations
 
-from src.rag_agent import run_agent
+import gradio as gr
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from src.rag_agent import run_agent  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # State: conversation history is kept in a Gradio State object so each
 # browser session has its own independent history.
 # ---------------------------------------------------------------------------
 
-def chat(message: str, history: list[list[str]], session_history: list[dict]):
+def chat(
+    message: str,
+    history: list[list[str]] | None,
+    session_history: list[dict] | None,
+):
     """
     Gradio chat handler.
 
@@ -28,20 +37,23 @@ def chat(message: str, history: list[list[str]], session_history: list[dict]):
         session_history: Internal [{role, content}, ...] list for the agent.
 
     Returns:
-        Tuple of ("", updated_history, updated_session_history)
-        — empty string clears the input box.
+        Tuple of ("", updated_history, updated_session_history).
+        The empty string clears the input box.
     """
-    # Convert Gradio history format → agent format
-    agent_history = session_history.copy()
+    history = history or []
+    agent_history = list(session_history or [])
+    message = (message or "").strip()
 
-    # Run the agent
-    answer = run_agent(query=message, history=agent_history)
+    if not message:
+        return "", history, agent_history
 
-    # Update internal history
+    try:
+        answer = run_agent(query=message, history=agent_history)
+    except Exception as exc:
+        answer = f"Error: {exc}"
+
     agent_history.append({"role": "user", "content": message})
     agent_history.append({"role": "assistant", "content": answer})
-
-    # Update Gradio display history
     history.append([message, answer])
 
     return "", history, agent_history
@@ -49,7 +61,7 @@ def chat(message: str, history: list[list[str]], session_history: list[dict]):
 
 def clear_session():
     """Reset the chat and conversation memory."""
-    return [], [], []
+    return [], [], ""
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +74,7 @@ with gr.Blocks(
 ) as demo:
     gr.Markdown(
         """
-        # 🤖 Agentic RAG — LangGraph + FAISS
+        # Agentic RAG - LangGraph + FAISS
         Ask questions about the documents in `data/sample_docs/`.
         The agent will **rewrite your query**, **retrieve relevant chunks**,
         **grade their relevance**, and **generate a grounded answer**.
@@ -73,7 +85,7 @@ with gr.Blocks(
 
     chatbot = gr.Chatbot(height=450, label="Conversation")
     msg_box = gr.Textbox(
-        placeholder="Ask a question about your documents…",
+        placeholder="Ask a question about your documents...",
         label="Your question",
         show_label=False,
         lines=2,
@@ -102,7 +114,7 @@ with gr.Blocks(
     gr.Markdown(
         """
         ---
-        **Built by Vamshi** · [GitHub](https://github.com/vamshi)
+        Built by Vamshi - [GitHub](https://github.com/VamshiKrish2825)
         """
     )
 
