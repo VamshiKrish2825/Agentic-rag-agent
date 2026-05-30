@@ -5,14 +5,14 @@ LangGraph-based Agentic RAG pipeline.
 
 Flow:
     User Query
-        ↓
-    query_rewriter  — cleans / expands the query
-        ↓
-    retriever       — fetches top-k chunks from the vector store
-        ↓
-    relevance_check — grades each chunk; routes to generate or rewrite
-        ↓
-    generator       — synthesises a final answer from accepted chunks
+        ->
+    query_rewriter  - cleans / expands the query
+        ->
+    retriever       - fetches top-k chunks from the vector store
+        ->
+    relevance_check - grades each chunk; routes to generate or rewrite
+        ->
+    generator       - synthesizes a final answer from accepted chunks
 """
 
 from __future__ import annotations
@@ -20,29 +20,48 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
-from src.retriever import get_retriever
-from src.state import RAGState
 from src.prompts import (
+    GENERATE_PROMPT,
     QUERY_REWRITE_PROMPT,
     RELEVANCE_PROMPT,
-    GENERATE_PROMPT,
 )
+from src.retriever import get_retriever
+from src.state import RAGState
+
+load_dotenv()
 
 # ---------------------------------------------------------------------------
-# LLM setup — swap model or base_url for any OpenAI-compatible endpoint
+# LLM setup - swap model or base_url for any OpenAI-compatible endpoint
 # ---------------------------------------------------------------------------
+
+MAX_REWRITES = int(os.getenv("MAX_REWRITES", "2"))
+
 
 def _get_llm() -> ChatOpenAI:
-    """Return the LLM.  Set OPENAI_API_KEY (or GROQ_API_KEY + base_url) in .env."""
-    return ChatOpenAI(
-        model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
-        temperature=0,
-        api_key=os.getenv("OPENAI_API_KEY"),
-    )
+    """Return the configured OpenAI-compatible chat model."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    base_url = os.getenv("OPENAI_BASE_URL")
+
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. Add it to your environment or .env file. "
+            "For Ollama, set OPENAI_API_KEY=ollama."
+        )
+
+    kwargs: dict[str, Any] = {
+        "model": os.getenv("LLM_MODEL", "gpt-4o-mini"),
+        "temperature": float(os.getenv("LLM_TEMPERATURE", "0")),
+        "api_key": api_key,
+    }
+    if base_url:
+        kwargs["base_url"] = base_url
+
+    return ChatOpenAI(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +80,7 @@ def query_rewriter(state: RAGState) -> dict[str, Any]:
     )
     result = llm.invoke(prompt)
     rewritten = result.content.strip()
-    return {"rewritten_query": rewritten, "rewrites": state.get("rewrites", 0)}
+    return {"rewritten_query": rewritten}
 
 
 def retriever_node(state: RAGState) -> dict[str, Any]:
@@ -72,7 +91,7 @@ def retriever_node(state: RAGState) -> dict[str, Any]:
 
 
 def relevance_check(state: RAGState) -> dict[str, Any]:
-    """Grade each retrieved document; keep only relevant ones."""
+    """Grade each retrieved document and keep only relevant chunks."""
     llm = _get_llm()
     relevant: list[Document] = []
 
@@ -82,10 +101,20 @@ def relevance_check(state: RAGState) -> dict[str, Any]:
             content=doc.page_content[:800],  # truncate long chunks
         )
         verdict = llm.invoke(prompt).content.strip().lower()
-        if "yes" in verdict:
+        if verdict.startswith("yes"):
             relevant.append(doc)
 
     return {"relevant_docs": relevant}
+
+
+def increment_rewrite_count(state: RAGState) -> dict[str, Any]:
+    """Track retry attempts as a normal graph state update."""
+    return {"rewrites": state.get("rewrites", 0) + 1}
+
+
+def use_fallback_documents(state: RAGState) -> dict[str, Any]:
+    """Use retrieved documents when strict grading rejects everything."""
+    return {"relevant_docs": state.get("documents", [])}
 
 
 def generator(state: RAGState) -> dict[str, Any]:
@@ -108,24 +137,13 @@ def generator(state: RAGState) -> dict[str, Any]:
 # Routing logic
 # ---------------------------------------------------------------------------
 
-MAX_REWRITES = 2
-
-
 def route_after_relevance(state: RAGState) -> str:
-    """
-    If enough relevant docs exist → generate.
-    If we've already rewritten too many times → generate anyway (best-effort).
-    Otherwise → rewrite the query and try again.
-    """
+    """Route to generation, retry with a rewritten query, or fallback context."""
     if state["relevant_docs"]:
         return "generate"
     if state.get("rewrites", 0) >= MAX_REWRITES:
-        # Fall back: use all retrieved docs so the user still gets an answer
-        state["relevant_docs"] = state["documents"]
-        return "generate"
-    # Increment rewrite counter and loop back
-    state["rewrites"] = state.get("rewrites", 0) + 1
-    return "rewrite"
+        return "fallback"
+    return "retry"
 
 
 # ---------------------------------------------------------------------------
@@ -136,26 +154,27 @@ def build_graph() -> Any:
     """Compile and return the LangGraph agent."""
     graph = StateGraph(RAGState)
 
-    # Register nodes
     graph.add_node("rewrite", query_rewriter)
     graph.add_node("retrieve", retriever_node)
     graph.add_node("grade", relevance_check)
+    graph.add_node("increment_rewrite", increment_rewrite_count)
+    graph.add_node("fallback", use_fallback_documents)
     graph.add_node("generate", generator)
 
-    # Entry point
     graph.set_entry_point("rewrite")
 
-    # Edges
     graph.add_edge("rewrite", "retrieve")
     graph.add_edge("retrieve", "grade")
+    graph.add_edge("increment_rewrite", "rewrite")
+    graph.add_edge("fallback", "generate")
 
-    # Conditional routing after grading
     graph.add_conditional_edges(
         "grade",
         route_after_relevance,
         {
             "generate": "generate",
-            "rewrite": "rewrite",
+            "retry": "increment_rewrite",
+            "fallback": "fallback",
         },
     )
 
